@@ -46,6 +46,7 @@ type usageReport struct {
 	Daily        periodStats
 	Weekly       periodStats
 	Monthly      periodStats
+	BalanceStats periodStats
 	DailyRecords []dailyRecord
 	ExpiresAt    string
 }
@@ -386,6 +387,7 @@ func parseUsage(data []byte) (usageReport, error) {
 	if report.Weekly.Used == 0 && len(report.DailyRecords) > 0 {
 		report.Weekly = sumRecentRecords(report.DailyRecords, 7)
 	}
+	report.BalanceStats = parseBalanceStats(root, subscription, quota, usage, report.DailyRecords, report.Balance, report.Remaining)
 	return report, nil
 }
 
@@ -404,9 +406,9 @@ func periodFrom(value any, period string) periodStats {
 	if value == nil {
 		return periodStats{}
 	}
-	limitValue := findPath(value, []string{period + "_limit_usd"}, []string{period + "LimitUsd"}, []string{"limit", period})
+	limitValue := findPath(value, []string{period + "_limit_usd"}, []string{period + "LimitUsd"}, []string{"limit", period}, []string{period, "limit"})
 	return periodStats{
-		Used:       numberValue(findPath(value, []string{period + "_usage_usd"}, []string{period + "UsageUsd"}, []string{"usage", period, "cost"}, []string{period, "cost"})),
+		Used:       numberValue(findPath(value, []string{period + "_usage_usd"}, []string{period + "UsageUsd"}, []string{"usage", period, "actual_cost"}, []string{"usage", period, "actualCost"}, []string{"usage", period, "cost"}, []string{period, "actual_cost"}, []string{period, "actualCost"}, []string{period, "cost"})),
 		Limit:      numberValue(limitValue),
 		HasLimit:   limitValue != nil,
 		Requests:   intValue(findPath(value, []string{"requests"})),
@@ -431,7 +433,7 @@ func parseDailyRecords(root any) []dailyRecord {
 			InputTokens:  intValue(findPath(item, []string{"input_tokens"}, []string{"inputTokens"})),
 			OutputTokens: intValue(findPath(item, []string{"output_tokens"}, []string{"outputTokens"})),
 			TotalTokens:  intValue(findPath(item, []string{"total_tokens"}, []string{"totalTokens"})),
-			Cost:         numberValue(findPath(item, []string{"cost"}, []string{"actual_cost"}, []string{"actualCost"})),
+			Cost:         numberValue(findPath(item, []string{"actual_cost"}, []string{"actualCost"}, []string{"cost"})),
 		})
 	}
 	return records
@@ -449,6 +451,100 @@ func sumRecentRecords(records []dailyRecord, days int) periodStats {
 		result.TotalToken += record.TotalTokens
 	}
 	return result
+}
+
+func sumAllRecords(records []dailyRecord) periodStats {
+	var result periodStats
+	for _, record := range records {
+		result.Used += record.Cost
+		result.Requests += record.Requests
+		result.TotalToken += record.TotalTokens
+	}
+	return result
+}
+
+func parseBalanceStats(root, subscription, quota, usage any, dailyRecords []dailyRecord, balance, remaining *float64) periodStats {
+	var stats periodStats
+
+	subTotal := periodFrom(subscription, "total")
+	if subTotal.HasLimit || subTotal.Used > 0 {
+		stats = subTotal
+	} else {
+		subMonthly := periodFrom(subscription, "monthly")
+		if subMonthly.HasLimit || subMonthly.Used > 0 {
+			stats = subMonthly
+		}
+	}
+
+	if quota != nil {
+		if limitVal := firstNumber(quota, []string{"total"}, []string{"total_quota"}, []string{"limit"}, []string{"total_usd"}); limitVal != nil && !stats.HasLimit {
+			stats.Limit = *limitVal
+			stats.HasLimit = true
+		}
+		if usedVal := firstNumber(quota, []string{"used"}, []string{"used_quota"}, []string{"usage"}, []string{"used_usd"}); usedVal != nil && stats.Used == 0 {
+			stats.Used = *usedVal
+		}
+		if stats.Requests == 0 {
+			stats.Requests = intValue(findPath(quota, []string{"requests"}))
+		}
+		if stats.TotalToken == 0 {
+			stats.TotalToken = intValue(findPath(quota, []string{"total_tokens"}, []string{"totalTokens"}))
+		}
+	}
+
+	if !stats.HasLimit {
+		if limitVal := firstNumber(root, []string{"total_quota"}, []string{"total_limit_usd"}, []string{"totalLimitUsd"}, []string{"total_limit"}); limitVal != nil {
+			stats.Limit = *limitVal
+			stats.HasLimit = true
+		}
+	}
+	if stats.Used == 0 {
+		if usedVal := firstNumber(root, []string{"used_quota"}, []string{"total_usage_usd"}, []string{"totalUsageUsd"}); usedVal != nil {
+			stats.Used = *usedVal
+		}
+	}
+
+	if usage != nil {
+		usageTotal := periodFrom(usage, "total")
+		if stats.Used == 0 && usageTotal.Used > 0 {
+			stats.Used = usageTotal.Used
+		}
+		if stats.Requests == 0 && usageTotal.Requests > 0 {
+			stats.Requests = usageTotal.Requests
+		}
+		if stats.TotalToken == 0 && usageTotal.TotalToken > 0 {
+			stats.TotalToken = usageTotal.TotalToken
+		}
+	}
+
+	if len(dailyRecords) > 0 {
+		allStats := sumAllRecords(dailyRecords)
+		if stats.Used == 0 && allStats.Used > 0 {
+			stats.Used = allStats.Used
+		}
+		if stats.Requests == 0 && allStats.Requests > 0 {
+			stats.Requests = allStats.Requests
+		}
+		if stats.TotalToken == 0 && allStats.TotalToken > 0 {
+			stats.TotalToken = allStats.TotalToken
+		}
+	}
+
+	if balance != nil {
+		bal := *balance
+		if !stats.HasLimit {
+			stats.Limit = stats.Used + bal
+			stats.HasLimit = true
+		} else if stats.Used == 0 && bal < stats.Limit {
+			stats.Used = stats.Limit - bal
+		}
+	} else if remaining != nil && !stats.HasLimit {
+		rem := *remaining
+		stats.Limit = stats.Used + rem
+		stats.HasLimit = true
+	}
+
+	return stats
 }
 
 func findPath(value any, paths ...[]string) any {
@@ -562,6 +658,7 @@ func printDashboard(out io.Writer, endpoint string, report usageReport, refreshS
 		rows = append(rows, "状态      认证或订阅状态异常")
 	}
 	printBox(out, width, rows...)
+	printUsageBar(out, width, "余额", report.BalanceStats, report.Unit)
 	printUsageBar(out, width, "日限", report.Daily, report.Unit)
 	printUsageBar(out, width, "周限", report.Weekly, report.Unit)
 

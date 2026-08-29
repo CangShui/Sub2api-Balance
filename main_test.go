@@ -3,7 +3,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestUsageEndpoint(t *testing.T) {
@@ -119,6 +121,131 @@ func TestParseRefreshOptions(t *testing.T) {
 			t.Errorf("parseOptions(%v) expected error", args)
 		}
 	}
+}
+
+func TestParseBalanceStats(t *testing.T) {
+	// 1. Total quota subscription test
+	totalQuotaData := []byte(`{
+  "isValid": true,
+  "planName": "Total Quota Plan",
+  "unit": "USD",
+  "subscription": {
+    "total_limit_usd": 100,
+    "total_usage_usd": 25
+  }
+}`)
+	report1, err := parseUsage(totalQuotaData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report1.BalanceStats.HasLimit || report1.BalanceStats.Limit != 100 || report1.BalanceStats.Used != 25 {
+		t.Fatalf("total quota BalanceStats = %+v, want Limit=100 Used=25", report1.BalanceStats)
+	}
+
+	// 2. Wallet balance test
+	walletData := []byte(`{
+  "isValid": true,
+  "balance": 80.0,
+  "unit": "USD",
+  "usage": {
+    "total": {
+      "cost": 20.0
+    }
+  }
+}`)
+	report2, err := parseUsage(walletData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report2.BalanceStats.HasLimit || report2.BalanceStats.Limit != 100 || report2.BalanceStats.Used != 20 {
+		t.Fatalf("wallet BalanceStats = %+v, want Limit=100 Used=20", report2.BalanceStats)
+	}
+
+	// 3. Quota object test
+	quotaData := []byte(`{
+  "isValid": true,
+  "quota": {
+    "total": 50.0,
+    "used": 10.0
+  }
+}`)
+	report3, err := parseUsage(quotaData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report3.BalanceStats.HasLimit || report3.BalanceStats.Limit != 50 || report3.BalanceStats.Used != 10 {
+		t.Fatalf("quota BalanceStats = %+v, want Limit=50 Used=10", report3.BalanceStats)
+	}
+}
+
+func TestPrintDashboardWithBalanceBar(t *testing.T) {
+	report := usageReport{
+		Valid:    true,
+		PlanName: "Test Plan",
+		Unit:     "USD",
+		Daily: periodStats{
+			Used:     10,
+			Limit:    100,
+			HasLimit: true,
+		},
+		Weekly: periodStats{
+			Used:     50,
+			Limit:    300,
+			HasLimit: true,
+		},
+		BalanceStats: periodStats{
+			Used:     20,
+			Limit:    100,
+			HasLimit: true,
+		},
+	}
+	bal := 80.0
+	report.Balance = &bal
+
+	var buf strings.Builder
+	printDashboard(&buf, "https://example.com/v1", report, 0, time.Time{})
+	out := buf.String()
+
+	idxBalance := strings.Index(out, "余额\n┌")
+	idxDaily := strings.Index(out, "日限\n┌")
+	idxWeekly := strings.Index(out, "周限\n┌")
+
+	if idxBalance == -1 || idxDaily == -1 || idxWeekly == -1 {
+		t.Fatalf("missing bar in output:\n%s", out)
+	}
+	if !(idxBalance < idxDaily && idxDaily < idxWeekly) {
+		t.Errorf("expected order: 余额 < 日限 < 周限, got balance=%d, daily=%d, weekly=%d", idxBalance, idxDaily, idxWeekly)
+	}
+}
+
+func TestRealSub2apiWalletUsage(t *testing.T) {
+	data := []byte(`{"balance":7.28784931,"daily_usage":[{"date":"2026-07-31","requests":278,"input_tokens":1888927,"output_tokens":95224,"cache_read_tokens":38381184,"cache_write_tokens":0,"total_tokens":40365335,"cost":31.4771612,"actual_cost":3.14771612},{"date":"2026-08-14","requests":398,"input_tokens":2396216,"output_tokens":259001,"cache_read_tokens":46824192,"cache_write_tokens":0,"total_tokens":49479409,"cost":42.8556008,"actual_cost":4.28556008},{"date":"2026-08-15","requests":460,"input_tokens":2573073,"output_tokens":267863,"cache_read_tokens":57040896,"cache_write_tokens":0,"total_tokens":59881832,"cost":34.8544786,"actual_cost":3.48544786},{"date":"2026-08-16","requests":10,"input_tokens":16098,"output_tokens":8681,"cache_read_tokens":38400,"cache_write_tokens":0,"total_tokens":63179,"cost":0.146863,"actual_cost":0.0146863},{"date":"2026-08-17","requests":44,"input_tokens":566707,"output_tokens":29166,"cache_read_tokens":3613824,"cache_write_tokens":0,"total_tokens":4209697,"cost":2.04493328,"actual_cost":0.204493328},{"date":"2026-08-18","requests":105,"input_tokens":970355,"output_tokens":54938,"cache_read_tokens":9398272,"cache_write_tokens":0,"total_tokens":10423565,"cost":4.4614422,"actual_cost":0.44614422},{"date":"2026-08-19","requests":433,"input_tokens":3426708,"output_tokens":298621,"cache_read_tokens":52968192,"cache_write_tokens":0,"total_tokens":56693521,"cost":21.0065718,"actual_cost":2.10065718},{"date":"2026-08-20","requests":668,"input_tokens":5717064,"output_tokens":534400,"cache_read_tokens":75678976,"cache_write_tokens":0,"total_tokens":81930440,"cost":32.985634,"actual_cost":3.2985634},{"date":"2026-08-21","requests":55,"input_tokens":1027004,"output_tokens":36839,"cache_read_tokens":3612672,"cache_write_tokens":0,"total_tokens":4676515,"cost":3.2486104,"actual_cost":0.32486104}],"isValid":true,"mode":"unrestricted","model_stats":[{"model":"gpt-5.6-terra","requests":1536,"input_tokens":12845454,"output_tokens":1092091,"cache_creation_tokens":0,"cache_read_tokens":173676544,"total_tokens":187614089,"cost":73.5813088,"actual_cost":7.35813088,"account_cost":73.5813088},{"model":"gpt-5.6-sol","requests":765,"input_tokens":4501482,"output_tokens":441166,"cache_creation_tokens":0,"cache_read_tokens":93135488,"total_tokens":98078136,"cost":82.330134,"actual_cost":8.2330134,"account_cost":82.330134},{"model":"gpt-5.5","requests":135,"input_tokens":1077752,"output_tokens":42178,"cache_creation_tokens":0,"cache_read_tokens":20702592,"total_tokens":21822522,"cost":17.005396,"actual_cost":1.7005396,"account_cost":17.005396},{"model":"gpt-5.6-luna","requests":6,"input_tokens":140115,"output_tokens":631,"cache_creation_tokens":0,"cache_read_tokens":15104,"total_tokens":155850,"cost":0.02908228,"actual_cost":0.002908228,"account_cost":0.02908228},{"model":"gpt-5.4","requests":4,"input_tokens":8107,"output_tokens":6299,"cache_creation_tokens":0,"cache_read_tokens":15360,"total_tokens":29766,"cost":0.1185925,"actual_cost":0.01185925,"account_cost":0.1185925},{"model":"gpt-5.4-mini","requests":3,"input_tokens":6350,"output_tokens":2344,"cache_creation_tokens":0,"cache_read_tokens":11520,"total_tokens":20214,"cost":0.0161745,"actual_cost":0.00161745,"account_cost":0.0161745},{"model":"codex-auto-review","requests":2,"input_tokens":2892,"output_tokens":24,"cache_creation_tokens":0,"cache_read_tokens":0,"total_tokens":2916,"cost":0.0006072,"actual_cost":0.00006072,"account_cost":0.0006072}],"planName":"钱包余额","remaining":7.28784931,"unit":"USD","usage":{"average_duration_ms":17444.60556976414,"rpm":0,"today":{"actual_cost":0,"cache_creation_tokens":0,"cache_read_tokens":0,"cost":0,"input_tokens":0,"output_tokens":0,"requests":0,"total_tokens":0},"total":{"actual_cost":26.533143948,"cache_creation_tokens":0,"cache_read_tokens":370977920,"cost":265.33143948,"input_tokens":36010409,"output_tokens":2017657,"requests":3519,"total_tokens":409005986},"tpm":0}}`)
+
+	report, err := parseUsage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Balance == nil || *report.Balance != 7.28784931 {
+		t.Fatalf("Balance = %v, want 7.28784931", report.Balance)
+	}
+	if !report.BalanceStats.HasLimit {
+		t.Fatalf("BalanceStats.HasLimit = false, want true")
+	}
+
+	// Used should be actual_cost: 26.533143948
+	if report.BalanceStats.Used < 26.53 || report.BalanceStats.Used > 26.54 {
+		t.Fatalf("BalanceStats.Used = %v, want ~26.533", report.BalanceStats.Used)
+	}
+	// Limit = 26.533143948 + 7.28784931 = 33.820993258
+	if report.BalanceStats.Limit < 33.82 || report.BalanceStats.Limit > 33.83 {
+		t.Fatalf("BalanceStats.Limit = %v, want ~33.821", report.BalanceStats.Limit)
+	}
+
+	var buf strings.Builder
+	printDashboard(&buf, "https://sub2api.example/v1", report, 0, time.Time{})
+	out := buf.String()
+	t.Logf("Rendered dashboard:\n%s", out)
 }
 
 func TestFormatExpiry(t *testing.T) {
