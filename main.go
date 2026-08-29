@@ -17,7 +17,7 @@ import (
 	"unicode"
 )
 
-var version = "0.2.0"
+var version = "0.2.1"
 
 type options struct {
 	refreshSeconds int
@@ -658,16 +658,16 @@ func printDashboard(out io.Writer, endpoint string, report usageReport, refreshS
 		rows = append(rows, "状态      认证或订阅状态异常")
 	}
 	printBox(out, width, rows...)
-	printUsageBar(out, width, "余额", report.BalanceStats, report.Unit)
-	printUsageBar(out, width, "日限", report.Daily, report.Unit)
-	printUsageBar(out, width, "周限", report.Weekly, report.Unit)
+	printUsageBar(out, width, "余额", report.BalanceStats, report.Unit, "总额")
+	printUsageBar(out, width, "日限", report.Daily, report.Unit, "限额")
+	printUsageBar(out, width, "周限", report.Weekly, report.Unit, "限额")
 
 	if refreshSeconds > 0 && !refreshedAt.IsZero() {
 		fmt.Fprintf(out, "\n%s\n", fitDisplay(fmt.Sprintf("最后刷新：%s  |  每 %d 秒刷新  |  Ctrl+C 退出", refreshedAt.Format("2006-01-02 15:04:05"), refreshSeconds), width))
 	}
 }
 
-func printUsageBar(out io.Writer, width int, title string, period periodStats, unit string) {
+func printUsageBar(out io.Writer, width int, title string, period periodStats, unit string, limitLabel string) {
 	barWidth := width - 2
 	if barWidth < 20 {
 		barWidth = 20
@@ -696,7 +696,7 @@ func printUsageBar(out io.Writer, width int, title string, period periodStats, u
 	fmt.Fprintf(out, "┌%s┐\n", strings.Repeat("─", barWidth))
 	fmt.Fprintf(out, "│%s│\n", bar)
 	fmt.Fprintf(out, "└%s┘\n", strings.Repeat("─", barWidth))
-	info := fmt.Sprintf("已用：%s    限额：%s    剩余：%s    使用率：%.0f%%", formatMoneyCompact(period.Used, unit), limit, remaining, percent)
+	info := fmt.Sprintf("已用：%s    %s：%s    剩余：%s    使用率：%.0f%%", formatMoneyCompact(period.Used, unit), limitLabel, limit, remaining, percent)
 	fmt.Fprintln(out, fitDisplay(info, width))
 }
 

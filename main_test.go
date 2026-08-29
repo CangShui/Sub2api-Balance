@@ -248,6 +248,38 @@ func TestRealSub2apiWalletUsage(t *testing.T) {
 	t.Logf("Rendered dashboard:\n%s", out)
 }
 
+func TestQuotaNumericWalletUsage(t *testing.T) {
+	// 真实返回：quota 为数字 1000，balance/remaining = 964.16，used = 35.837
+	// 预期余额进度条：已用 35.84 + 剩余 964.16 = 总额 1000.00USD，文案显示"总额"
+	data := []byte(`{"balance":964.1629807725001,"daily_usage":[{"date":"2026-08-28","requests":890,"input_tokens":124075710,"output_tokens":334851,"cache_read_tokens":114310717,"cache_write_tokens":0,"total_tokens":124558054,"cost":9.702951367499999,"actual_cost":9.702951367499999},{"date":"2026-08-29","requests":1174,"input_tokens":223342484,"output_tokens":414114,"cache_read_tokens":208657265,"cache_write_tokens":0,"total_tokens":223991205,"cost":26.13406786,"actual_cost":26.13406786}],"isValid":true,"mode":"unrestricted","planName":"CAP Token Usage Tracker","quota":1000,"range":"retention","remaining":964.1629807725001,"unit":"USD","usage":{"average_duration_ms":11152.122426989827,"rpm":0,"today":{"actual_cost":26.134067860000002,"cache_creation_tokens":0,"cache_read_tokens":208657265,"cost":26.134067860000002,"input_tokens":223342484,"output_tokens":414114,"requests":1174,"total_tokens":223991205},"total":{"actual_cost":35.837019227499944,"cache_creation_tokens":0,"cache_read_tokens":322967982,"cost":35.837019227499944,"input_tokens":347418194,"output_tokens":748965,"requests":2064,"total_tokens":348549259},"tpm":0},"used":35.837019227499944}`)
+
+	report, err := parseUsage(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !report.BalanceStats.HasLimit {
+		t.Fatalf("BalanceStats.HasLimit = false, want true")
+	}
+	// 已用 = usage.total.actual_cost = 35.837
+	if report.BalanceStats.Used < 35.83 || report.BalanceStats.Used > 35.84 {
+		t.Fatalf("BalanceStats.Used = %v, want ~35.837", report.BalanceStats.Used)
+	}
+	// 总额 = 已用 + 剩余 = 35.837019227499944 + 964.1629807725001 = 1000.00
+	if report.BalanceStats.Limit < 999.99 || report.BalanceStats.Limit > 1000.01 {
+		t.Fatalf("BalanceStats.Limit = %v, want ~1000.00", report.BalanceStats.Limit)
+	}
+
+	var buf strings.Builder
+	printDashboard(&buf, "https://sub2api.example/v1", report, 0, time.Time{})
+	out := buf.String()
+	t.Logf("Rendered dashboard:\n%s", out)
+
+	if !strings.Contains(out, "总额：1000.00USD") {
+		t.Errorf("output missing '总额：1000.00USD':\n%s", out)
+	}
+}
+
 func TestFormatExpiry(t *testing.T) {
 	got := formatExpiry("2026-09-21T15:07:07.495365+08:00")
 	if got != "2026-09-21 15:07:07" {
